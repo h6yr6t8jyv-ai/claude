@@ -1,0 +1,68 @@
+//@version=6
+// SMA(200) Trend-Timing — BTC/USD, Daily
+// The classic "200-day moving average rule" (Paul Tudor Jones' original
+// version; popularized for crypto as the standard bull/bear regime filter).
+// Long spot BTC only while price is above its 200-day average; flat (cash)
+// otherwise. No shorting, no margin, no leverage — the strategy's entire
+// risk control IS the regime switch, not a stop-loss.
+//
+// Why this instead of another RSI-style mean-reversion variant: it trades
+// WITH the trend instead of fighting it, so it avoids the exact
+// inverted-payoff whipsaw problem (small wins, big losses, low win rate)
+// diagnosed in the RSI mean-reversion system. Every rule below is a pure
+// function of price — no discretion.
+strategy(
+     "SMA(200) Trend Timing - BTC/USD Daily",
+     overlay                 = true,
+     initial_capital          = 100000,
+     currency                 = currency.USD,
+     commission_type          = strategy.commission.percent,
+     commission_value         = 0.1,           // 0.1% per side
+     default_qty_type         = strategy.percent_of_equity,
+     default_qty_value        = 100,           // fully invested when long, no leverage
+     pyramiding               = 0,
+     process_orders_on_close  = false,         // orders generated on bar close ...
+     calc_on_every_tick       = false)         // ... fill at the NEXT bar's open
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+smaLength  = input.int(200, "Trend SMA length", group = "Indicator")
+bufferPct  = input.float(0.0, "Whipsaw buffer (% around SMA)", minval = 0.0, step = 0.5, group = "Indicator",
+     tooltip = "0 = classic rule (flip exactly at the SMA). >0 requires price to clear the SMA by this % before flipping, reducing chop near the line at the cost of later entries/exits.")
+allowShort = input.bool(false, "Allow short below SMA (off = spot-only, long/cash)", group = "Entries")
+
+// ---------------------------------------------------------------------------
+// Regime (with optional hysteresis band to reduce whipsaw right at the SMA)
+// ---------------------------------------------------------------------------
+smaTrend = ta.sma(close, smaLength)
+upperBand = smaTrend * (1 + bufferPct / 100)
+lowerBand = smaTrend * (1 - bufferPct / 100)
+
+var bool inUptrend = na
+if na(inUptrend)
+    inUptrend := close > smaTrend
+else if close > upperBand
+    inUptrend := true
+else if close < lowerBand
+    inUptrend := false
+// else: inside the buffer band, hold the previous regime unchanged
+
+// ---------------------------------------------------------------------------
+// Entries / exits — one signal per regime flip, fills at next bar's open.
+// ---------------------------------------------------------------------------
+if inUptrend and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+
+if not inUptrend
+    if allowShort
+        if strategy.position_size >= 0
+            strategy.entry("Short", strategy.short)
+    else if strategy.position_size > 0
+        strategy.close("Long", comment = "Trend flip to cash")
+
+// ---------------------------------------------------------------------------
+// Visuals
+// ---------------------------------------------------------------------------
+plot(smaTrend, "Trend SMA", color = color.orange, linewidth = 2)
+bgcolor(inUptrend ? color.new(color.green, 92) : color.new(color.red, 92))
