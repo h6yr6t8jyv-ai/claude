@@ -1,0 +1,143 @@
+//@version=6
+// Donchian Channel Breakout + ATR Trailing Stop — BTC/USD, short-term
+// ("Turtle"-style trend/momentum breakout). Structurally the opposite of
+// the RSI mean-reversion system: instead of fading extremes with a tight
+// profit target and a wide stop (small wins, big losses), this trades
+// WITH breakouts, cuts losers fast with a tight initial ATR stop, and lets
+// winners run under a ratcheting ATR trailing stop instead of a fixed
+// nearby target. Expect a lower win rate (often well under 50%) but a
+// favorable average-win : average-loss ratio -- that combination is what
+// can make the expectancy positive, not the win rate itself.
+//
+// No performance is claimed or guaranteed. This has NOT been backtested
+// against real historical data by the author of this script (no market
+// data access in the environment it was written in) -- run it in the
+// Strategy Tester across several non-overlapping periods and read the
+// Overview tab numbers before trusting it with any capital.
+//
+// Works on whatever chart timeframe you apply it to. "Short-term" here
+// means running it on an intraday chart (e.g. 1h/4h) rather than daily --
+// shorter timeframes mean more trades, more noise, and more commission
+// drag, so validate on the exact timeframe you intend to trade.
+strategy(
+     "Donchian Breakout + ATR Trail - BTC/USD",
+     overlay                 = true,
+     initial_capital          = 100000,
+     currency                 = currency.USD,
+     commission_type          = strategy.commission.percent,
+     commission_value         = 0.1,           // 0.1% per side
+     default_qty_type         = strategy.fixed,
+     default_qty_value        = 0,             // qty computed and passed explicitly
+     pyramiding               = 0,
+     process_orders_on_close  = false,         // orders generated on bar close ...
+     calc_on_every_tick       = false)         // ... fill at the NEXT bar's open
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+donchianLength  = input.int(20,  "Breakout lookback (bars)", group = "Entries")
+atrLength       = input.int(14,  "ATR length",               group = "Indicators")
+trendSmaLength  = input.int(100, "Trend filter SMA length",  group = "Indicators")
+useTrendFilter  = input.bool(true, "Only trade breakouts with the higher-timeframe trend", group = "Entries")
+allowShort      = input.bool(true, "Allow short breakouts",  group = "Entries")
+
+atrInitialMult  = input.float(2.0, "Initial stop (x ATR)",   group = "Risk")
+atrTrailMult    = input.float(3.0, "Trailing stop (x ATR)",  group = "Risk")
+riskPerTrade    = input.float(0.01, "Risk per trade (fraction of equity)", group = "Risk")
+maxNotionalFrac = input.float(0.25, "Max notional exposure (fraction of equity)", group = "Risk")
+lotStep         = input.float(0.0001, "Lot step (BTC)",      group = "Risk")
+
+// ---------------------------------------------------------------------------
+// Indicators
+// ---------------------------------------------------------------------------
+atrValue    = ta.atr(atrLength)
+smaTrend    = ta.sma(close, trendSmaLength)
+// Prior N-bar high/low, excluding the current bar (no look-ahead).
+donchianHigh = ta.highest(high, donchianLength)[1]
+donchianLow  = ta.lowest(low, donchianLength)[1]
+
+inPosition = strategy.position_size != 0
+isLong     = strategy.position_size > 0
+isShort    = strategy.position_size < 0
+
+upRegime   = not useTrendFilter or close > smaTrend
+downRegime = not useTrendFilter or close < smaTrend
+
+// ---------------------------------------------------------------------------
+// Entry signals (evaluated only while flat)
+// ---------------------------------------------------------------------------
+longEntryCond  = not inPosition and upRegime and close > donchianHigh
+shortEntryCond = not inPosition and allowShort and downRegime and close < donchianLow
+
+// ---------------------------------------------------------------------------
+// Position sizing — fixed-fractional risk on the INITIAL stop distance,
+// capped by max notional exposure. Entry price proxy = current close,
+// since the actual fill price (next bar's open) isn't known yet.
+// ---------------------------------------------------------------------------
+calcQty(stopDistance) =>
+    equity     = strategy.equity
+    entryProxy = close
+    rawSize    = stopDistance > 0 ? (equity * riskPerTrade) / stopDistance : 0.0
+    maxSize    = (maxNotionalFrac * equity) / entryProxy
+    cappedSize = math.min(rawSize, maxSize)
+    math.floor(cappedSize / lotStep) * lotStep
+
+// Persistent per-trade state (reset once flat).
+var float initialStopDistance = na
+var float initialStop         = na
+var float trailExtreme        = na
+var bool  tradeInit           = false
+
+if not inPosition
+    initialStopDistance := na
+    initialStop         := na
+    trailExtreme         := na
+    tradeInit             := false
+
+    if longEntryCond
+        dist = atrInitialMult * atrValue
+        qty  = calcQty(dist)
+        if qty > 0
+            initialStopDistance := dist
+            strategy.entry("Long", strategy.long, qty = qty)
+    else if shortEntryCond
+        dist = atrInitialMult * atrValue
+        qty  = calcQty(dist)
+        if qty > 0
+            initialStopDistance := dist
+            strategy.entry("Short", strategy.short, qty = qty)
+
+// ---------------------------------------------------------------------------
+// Once filled: seed the initial stop and the trailing extreme from the
+// actual fill price (done once per trade).
+// ---------------------------------------------------------------------------
+if inPosition and not tradeInit
+    initialStop := isLong ? strategy.position_avg_price - initialStopDistance
+                            : strategy.position_avg_price + initialStopDistance
+    trailExtreme := isLong ? high : low
+    tradeInit    := true
+
+// ---------------------------------------------------------------------------
+// Every bar in position: ratchet the trailing stop (never loosens) and
+// keep the resting stop order in sync. The broker emulator checks it
+// intrabar, filling at the stop price or at the bar's open if it gaps
+// through.
+// ---------------------------------------------------------------------------
+if inPosition
+    if isLong
+        trailExtreme := math.max(trailExtreme, high)
+        trailStop     = trailExtreme - atrTrailMult * atrValue
+        stopPrice     = math.max(initialStop, trailStop)
+        strategy.exit("Stop-Long", from_entry = "Long", stop = stopPrice)
+    if isShort
+        trailExtreme := math.min(trailExtreme, low)
+        trailStop     = trailExtreme + atrTrailMult * atrValue
+        stopPrice     = math.min(initialStop, trailStop)
+        strategy.exit("Stop-Short", from_entry = "Short", stop = stopPrice)
+
+// ---------------------------------------------------------------------------
+// Visuals
+// ---------------------------------------------------------------------------
+plot(donchianHigh, "Donchian High", color = color.new(color.teal, 40))
+plot(donchianLow,  "Donchian Low",  color = color.new(color.maroon, 40))
+plot(useTrendFilter ? smaTrend : na, "Trend SMA", color = color.orange, linewidth = 2)
