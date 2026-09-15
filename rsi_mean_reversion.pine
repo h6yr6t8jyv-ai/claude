@@ -1,0 +1,129 @@
+//@version=6
+// RSI(14) Mean-Reversion — BTC/USD, Daily
+// Direct Pine translation of STRATEGY.md — same entry/exit/stop/sizing rules
+// as rsi_mean_reversion.py. No discretionary inputs; defaults reproduce the spec.
+strategy(
+     "RSI(14) Mean Reversion - BTC/USD Daily",
+     overlay              = true,
+     initial_capital       = 100000,
+     currency              = currency.USD,
+     commission_type       = strategy.commission.percent,
+     commission_value      = 0.1,          // 0.1% per side (charged on entry fill and on exit fill)
+     default_qty_type      = strategy.fixed,
+     default_qty_value     = 0,            // qty is computed and passed explicitly per trade
+     pyramiding            = 0,            // one position at a time, no scaling in
+     process_orders_on_close = false,      // orders generated on bar close ...
+     calc_on_every_tick    = false)        // ... fill at the NEXT bar's open
+
+// ---------------------------------------------------------------------------
+// Inputs (defaults reproduce STRATEGY.md exactly)
+// ---------------------------------------------------------------------------
+rsiLength      = input.int(14,   "RSI length",            group = "Indicators")
+atrLength      = input.int(14,   "ATR length",             group = "Indicators")
+
+rsiLongEntry   = input.float(30, "Long entry: RSI crosses below", group = "Entries")
+rsiShortEntry  = input.float(70, "Short entry: RSI crosses above", group = "Entries")
+allowShort     = input.bool(true, "Allow short entries",   group = "Entries")
+
+rsiLongExit    = input.float(55, "Long exit: RSI crosses above",  group = "Exits")
+rsiShortExit   = input.float(45, "Short exit: RSI crosses below", group = "Exits")
+timeStopBars   = input.int(10,   "Time-stop (bars)",       group = "Exits")
+
+atrStopMult    = input.float(2.5, "Stop distance (x ATR)", group = "Risk")
+riskPerTrade   = input.float(0.01, "Risk per trade (fraction of equity)", group = "Risk")
+maxNotionalFrac = input.float(0.25, "Max notional exposure (fraction of equity)", group = "Risk")
+lotStep        = input.float(0.0001, "Lot step (BTC)",     group = "Risk")
+
+// ---------------------------------------------------------------------------
+// Indicators (ta.rsi / ta.atr both use Wilder/RMA smoothing, matching spec)
+// ---------------------------------------------------------------------------
+rsiValue = ta.rsi(close, rsiLength)
+atrValue = ta.atr(atrLength)
+rsiPrev  = rsiValue[1]
+
+inPosition = strategy.position_size != 0
+isLong     = strategy.position_size > 0
+isShort    = strategy.position_size < 0
+
+// ---------------------------------------------------------------------------
+// Entry signals (evaluated only while flat)
+// ---------------------------------------------------------------------------
+longEntryCond  = not inPosition and rsiPrev >= rsiLongEntry  and rsiValue < rsiLongEntry
+shortEntryCond = not inPosition and allowShort and rsiPrev <= rsiShortEntry and rsiValue > rsiShortEntry
+
+// ---------------------------------------------------------------------------
+// Position sizing — fixed-fractional risk, capped by max notional exposure.
+// Entry price is not yet known at signal time (order fills at next bar's
+// open), so the current close is used as the entry-price proxy for the
+// notional cap; the stop distance itself does not depend on entry price.
+// ---------------------------------------------------------------------------
+calcQty(stopDistance) =>
+    equity       = strategy.equity
+    entryProxy   = close
+    rawSize      = stopDistance > 0 ? (equity * riskPerTrade) / stopDistance : 0.0
+    maxSize      = (maxNotionalFrac * equity) / entryProxy
+    cappedSize   = math.min(rawSize, maxSize)
+    math.floor(cappedSize / lotStep) * lotStep
+
+// Persistent per-trade state (reset once flat).
+var float stopDistanceAtEntry = na
+var float stopPrice           = na
+var int   entryBarIndex       = na
+var bool  stopOrderSet        = false
+
+if not inPosition
+    stopDistanceAtEntry := na
+    stopPrice           := na
+    entryBarIndex        := na
+    stopOrderSet          := false
+
+    if longEntryCond
+        dist = atrStopMult * atrValue
+        qty  = calcQty(dist)
+        if qty > 0
+            stopDistanceAtEntry := dist
+            strategy.entry("Long", strategy.long, qty = qty)
+    else if shortEntryCond
+        dist = atrStopMult * atrValue
+        qty  = calcQty(dist)
+        if qty > 0
+            stopDistanceAtEntry := dist
+            strategy.entry("Short", strategy.short, qty = qty)
+
+// ---------------------------------------------------------------------------
+// Once filled: set the fixed ATR stop from the actual average fill price
+// (done once per trade), then manage exits every bar while in position.
+// ---------------------------------------------------------------------------
+if inPosition and not stopOrderSet
+    stopPrice := isLong ? strategy.position_avg_price - stopDistanceAtEntry
+                          : strategy.position_avg_price + stopDistanceAtEntry
+    entryBarIndex := bar_index
+    stopOrderSet  := true
+
+if inPosition
+    // Priority 1: stop-loss — resting stop order, checked intrabar by the
+    // broker emulator (fills at stopPrice, or at the bar's open if it gaps
+    // through the stop).
+    if isLong
+        strategy.exit("Stop-Long", from_entry = "Long", stop = stopPrice)
+    if isShort
+        strategy.exit("Stop-Short", from_entry = "Short", stop = stopPrice)
+
+    // Priority 2: RSI reversion target — signal on this bar's close, fills
+    // at next bar's open via strategy.close().
+    if isLong and ta.crossover(rsiValue, rsiLongExit)
+        strategy.close("Long", comment = "RSI Target")
+    if isShort and ta.crossunder(rsiValue, rsiShortExit)
+        strategy.close("Short", comment = "RSI Target")
+
+    // Priority 3: time-stop.
+    daysHeld = bar_index - entryBarIndex
+    if daysHeld >= timeStopBars
+        strategy.close_all(comment = "Time Stop")
+
+// ---------------------------------------------------------------------------
+// Visual aid: tint oversold/overbought zones (no separate RSI pane since
+// overlay = true keeps trade markers on the price chart).
+// ---------------------------------------------------------------------------
+bgcolor(rsiValue < rsiLongEntry ? color.new(color.green, 90) :
+         rsiValue > rsiShortEntry ? color.new(color.red, 90) : na)
