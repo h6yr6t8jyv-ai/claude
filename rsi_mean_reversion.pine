@@ -5,8 +5,8 @@
 strategy(
      "RSI(14) Mean Reversion - BTC/USD Daily",
      overlay              = true,
-     initial_capital       = 100000,
-     currency              = currency.USD,
+     initial_capital       = 50,
+     currency              = currency.EUR,
      commission_type       = strategy.commission.percent,
      commission_value      = 0.1,          // 0.1% per side (charged on entry fill and on exit fill)
      default_qty_type      = strategy.fixed,
