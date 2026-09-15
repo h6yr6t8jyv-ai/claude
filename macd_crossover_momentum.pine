@@ -1,0 +1,130 @@
+//@version=6
+// MACD Signal-Line Crossover Momentum — BTC/USD, short-term
+// Candidate #2 of a 3-strategy comparison (see also ema_crossover_momentum.pine
+// and keltner_breakout.pine). Identical risk management to the other two --
+// tight ATR initial stop, ATR trailing stop with no fixed nearby profit
+// target, fixed-fractional sizing -- only the entry trigger differs. Run all
+// three on the same symbol/timeframe/date range to compare fairly.
+//
+// No performance is claimed or guaranteed -- not backtested against real
+// data by the author (no market data access in this environment). Test in
+// the Strategy Tester before trusting it with any capital.
+strategy(
+     "MACD Crossover Momentum - BTC/USD",
+     overlay                 = true,
+     initial_capital          = 50,
+     currency                 = currency.EUR,
+     commission_type          = strategy.commission.percent,
+     commission_value         = 0.1,
+     default_qty_type         = strategy.fixed,
+     default_qty_value        = 0,
+     pyramiding               = 0,
+     process_orders_on_close  = false,
+     calc_on_every_tick       = false)
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+macdFast        = input.int(12, "MACD fast length",         group = "Entries")
+macdSlow        = input.int(26, "MACD slow length",         group = "Entries")
+macdSignal      = input.int(9,  "MACD signal length",       group = "Entries")
+atrLength       = input.int(14,  "ATR length",               group = "Indicators")
+trendSmaLength  = input.int(100, "Trend filter SMA length",  group = "Indicators")
+useTrendFilter  = input.bool(true, "Only trade with the higher-timeframe trend", group = "Entries")
+allowShort      = input.bool(true, "Allow short entries",    group = "Entries")
+
+atrInitialMult  = input.float(2.0, "Initial stop (x ATR)",   group = "Risk")
+atrTrailMult    = input.float(3.0, "Trailing stop (x ATR)",  group = "Risk")
+riskPerTrade    = input.float(0.01, "Risk per trade (fraction of equity)", group = "Risk")
+maxNotionalFrac = input.float(0.25, "Max notional exposure (fraction of equity)", group = "Risk")
+lotStep         = input.float(0.0001, "Lot step (BTC)",      group = "Risk")
+
+// ---------------------------------------------------------------------------
+// Indicators
+// ---------------------------------------------------------------------------
+[macdLine, signalLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSignal)
+atrValue = ta.atr(atrLength)
+smaTrend = ta.sma(close, trendSmaLength)
+
+inPosition = strategy.position_size != 0
+isLong     = strategy.position_size > 0
+isShort    = strategy.position_size < 0
+
+upRegime   = not useTrendFilter or close > smaTrend
+downRegime = not useTrendFilter or close < smaTrend
+
+// ---------------------------------------------------------------------------
+// Entry signals (evaluated only while flat) — this is the ONLY block that
+// differs between the three candidate scripts.
+// ---------------------------------------------------------------------------
+longEntryCond  = not inPosition and upRegime and ta.crossover(macdLine, signalLine)
+shortEntryCond = not inPosition and allowShort and downRegime and ta.crossunder(macdLine, signalLine)
+
+// ---------------------------------------------------------------------------
+// Position sizing — fixed-fractional risk on the INITIAL stop distance,
+// capped by max notional exposure.
+// ---------------------------------------------------------------------------
+calcQty(stopDistance) =>
+    equity     = strategy.equity
+    entryProxy = close
+    rawSize    = stopDistance > 0 ? (equity * riskPerTrade) / stopDistance : 0.0
+    maxSize    = (maxNotionalFrac * equity) / entryProxy
+    cappedSize = math.min(rawSize, maxSize)
+    math.floor(cappedSize / lotStep) * lotStep
+
+// Persistent per-trade state (reset once flat).
+var float initialStopDistance = na
+var float initialStop         = na
+var float trailExtreme        = na
+var bool  tradeInit           = false
+
+if not inPosition
+    initialStopDistance := na
+    initialStop         := na
+    trailExtreme         := na
+    tradeInit             := false
+
+    if longEntryCond
+        dist = atrInitialMult * atrValue
+        qty  = calcQty(dist)
+        if qty > 0
+            initialStopDistance := dist
+            strategy.entry("Long", strategy.long, qty = qty)
+    else if shortEntryCond
+        dist = atrInitialMult * atrValue
+        qty  = calcQty(dist)
+        if qty > 0
+            initialStopDistance := dist
+            strategy.entry("Short", strategy.short, qty = qty)
+
+// ---------------------------------------------------------------------------
+// Once filled: seed the initial stop and the trailing extreme.
+// ---------------------------------------------------------------------------
+if inPosition and not tradeInit
+    if isLong
+        initialStop := strategy.position_avg_price - initialStopDistance
+    else
+        initialStop := strategy.position_avg_price + initialStopDistance
+    trailExtreme := isLong ? high : low
+    tradeInit    := true
+
+// ---------------------------------------------------------------------------
+// Every bar in position: ratchet the trailing stop (never loosens).
+// ---------------------------------------------------------------------------
+if inPosition
+    if isLong
+        trailExtreme := math.max(trailExtreme, high)
+        trailStop     = trailExtreme - atrTrailMult * atrValue
+        stopPrice     = math.max(initialStop, trailStop)
+        strategy.exit("Stop-Long", from_entry = "Long", stop = stopPrice)
+    if isShort
+        trailExtreme := math.min(trailExtreme, low)
+        trailStop     = trailExtreme + atrTrailMult * atrValue
+        stopPrice     = math.min(initialStop, trailStop)
+        strategy.exit("Stop-Short", from_entry = "Short", stop = stopPrice)
+
+// ---------------------------------------------------------------------------
+// Visuals — MACD itself isn't price-scaled so it isn't plotted on this
+// overlay chart; just show the trend filter.
+// ---------------------------------------------------------------------------
+plot(useTrendFilter ? smaTrend : na, "Trend SMA", color = color.orange, linewidth = 2)
