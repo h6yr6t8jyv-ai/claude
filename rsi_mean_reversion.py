@@ -3,7 +3,9 @@ RSI(14) mean-reversion strategy for BTC/USD, daily bars.
 
 Deterministic reference implementation of STRATEGY.md — every entry,
 exit, stop, and size is a pure function of the OHLC series, no
-discretionary inputs.
+discretionary inputs. Entries are gated by an SMA(200) regime filter:
+longs only above it, shorts only below it, so the strategy fades
+short-term extremes without fighting BTC's dominant trend.
 
 Input: a DataFrame indexed by date (ascending) with columns
 Open, High, Low, Close.
@@ -21,6 +23,7 @@ import pandas as pd
 
 RSI_PERIOD = 14
 ATR_PERIOD = 14
+TREND_SMA_PERIOD = 200
 RSI_LONG_ENTRY = 30.0
 RSI_SHORT_ENTRY = 70.0
 RSI_LONG_EXIT = 55.0
@@ -101,6 +104,8 @@ def backtest(df: pd.DataFrame, starting_equity: float = 100_000.0) -> list[Trade
     df["RSI"] = wilder_rsi(df["Close"])
     df["ATR"] = wilder_atr(df)
     df["RSI_prev"] = df["RSI"].shift(1)
+    df["SMA200"] = df["Close"].rolling(TREND_SMA_PERIOD).mean()
+    df["Regime"] = df["Close"] > df["SMA200"]  # True = "up", False = "down"
 
     equity = starting_equity
     trades: list[Trade] = []
@@ -184,10 +189,13 @@ def backtest(df: pd.DataFrame, starting_equity: float = 100_000.0) -> list[Trade
                 position = None
 
         # New entry signal only when flat (evaluate using this bar's close).
-        if position is None and pending_entry_side is None:
-            if row["RSI_prev"] >= RSI_LONG_ENTRY > row["RSI"]:
+        # Regime filter: longs only in an "up" regime (Close > SMA200),
+        # shorts only in a "down" regime. No signal is taken while SMA200
+        # is still undefined (warm-up period).
+        if position is None and pending_entry_side is None and pd.notna(row["SMA200"]):
+            if row["Regime"] and row["RSI_prev"] >= RSI_LONG_ENTRY > row["RSI"]:
                 pending_entry_side = "long"
-            elif row["RSI_prev"] <= RSI_SHORT_ENTRY < row["RSI"]:
+            elif not row["Regime"] and row["RSI_prev"] <= RSI_SHORT_ENTRY < row["RSI"]:
                 pending_entry_side = "short"
 
     return trades

@@ -20,7 +20,9 @@ strategy(
 // ---------------------------------------------------------------------------
 rsiLength      = input.int(14,   "RSI length",            group = "Indicators")
 atrLength      = input.int(14,   "ATR length",             group = "Indicators")
+trendSmaLength = input.int(200,  "Trend filter SMA length", group = "Indicators")
 
+useTrendFilter = input.bool(true, "Use trend filter (longs above SMA, shorts below)", group = "Entries")
 rsiLongEntry   = input.float(30, "Long entry: RSI crosses below", group = "Entries")
 rsiShortEntry  = input.float(70, "Short entry: RSI crosses above", group = "Entries")
 allowShort     = input.bool(true, "Allow short entries",   group = "Entries")
@@ -40,16 +42,27 @@ lotStep        = input.float(0.0001, "Lot step (BTC)",     group = "Risk")
 rsiValue = ta.rsi(close, rsiLength)
 atrValue = ta.atr(atrLength)
 rsiPrev  = rsiValue[1]
+smaTrend = ta.sma(close, trendSmaLength)
 
 inPosition = strategy.position_size != 0
 isLong     = strategy.position_size > 0
 isShort    = strategy.position_size < 0
 
 // ---------------------------------------------------------------------------
+// Regime filter — plain symmetric RSI fading fights BTC's dominant trend
+// (shorting RSI(70) spikes in bull runs, buying RSI(30) dips in bear
+// grinds). Gating entries by a long-horizon trend filter keeps every rule
+// mechanical while removing that structural source of negative expectancy:
+// longs only above the trend SMA, shorts only below it.
+// ---------------------------------------------------------------------------
+upRegime   = not useTrendFilter or close > smaTrend
+downRegime = not useTrendFilter or close < smaTrend
+
+// ---------------------------------------------------------------------------
 // Entry signals (evaluated only while flat)
 // ---------------------------------------------------------------------------
-longEntryCond  = not inPosition and rsiPrev >= rsiLongEntry  and rsiValue < rsiLongEntry
-shortEntryCond = not inPosition and allowShort and rsiPrev <= rsiShortEntry and rsiValue > rsiShortEntry
+longEntryCond  = not inPosition and upRegime and rsiPrev >= rsiLongEntry  and rsiValue < rsiLongEntry
+shortEntryCond = not inPosition and allowShort and downRegime and rsiPrev <= rsiShortEntry and rsiValue > rsiShortEntry
 
 // ---------------------------------------------------------------------------
 // Position sizing — fixed-fractional risk, capped by max notional exposure.
@@ -122,8 +135,9 @@ if inPosition
         strategy.close_all(comment = "Time Stop")
 
 // ---------------------------------------------------------------------------
-// Visual aid: tint oversold/overbought zones (no separate RSI pane since
-// overlay = true keeps trade markers on the price chart).
+// Visual aid: trend SMA, plus tint oversold/overbought zones (no separate
+// RSI pane since overlay = true keeps trade markers on the price chart).
 // ---------------------------------------------------------------------------
+plot(useTrendFilter ? smaTrend : na, "Trend SMA", color = color.orange, linewidth = 2)
 bgcolor(rsiValue < rsiLongEntry ? color.new(color.green, 90) :
          rsiValue > rsiShortEntry ? color.new(color.red, 90) : na)

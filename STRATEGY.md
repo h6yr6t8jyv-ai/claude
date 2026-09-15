@@ -44,12 +44,37 @@ ATR_t  = (ATR_{t-1} * 13 + TR_t) / 14
 
 Evaluated only when **flat** (no open position).
 
+### 2.1 Regime filter
+
+Plain symmetric RSI mean-reversion — fading every overbought reading with
+a short and every oversold reading with a long — fights BTC's dominant
+trend: shorting RSI(70) spikes during multi-month bull runs, and buying
+RSI(30) dips during sustained bear-market grinds, is a known way to bleed
+out to stop-losses and commission. To keep the strategy purely mechanical
+while addressing this, entries are gated by a long-horizon trend filter:
+
+```
+SMA_200_t = simple moving average of Close over the trailing 200 bars
+Regime_t  = "up"   if Close_t > SMA_200_t
+            "down" if Close_t <= SMA_200_t
+```
+
+- Longs are only taken in an "up" regime (buy the dip, with the trend).
+- Shorts are only taken in a "down" regime (short the rip, with the trend).
+
+This is still 100% rule-based — no discretion, just one more computable
+condition — and it removes the single largest known source of negative
+expectancy for this style of strategy on a strongly trending asset like
+BTC.
+
+### 2.2 Entry conditions
+
 - **Long entry signal**, fires on bar `t`:
-  `RSI_{t-1} >= 30  AND  RSI_t < 30`   (RSI crosses below 30)
+  `Regime_t == "up"  AND  RSI_{t-1} >= 30  AND  RSI_t < 30`   (RSI crosses below 30)
   → Submit market buy, fills at `Open_{t+1}`.
 
-- **Short entry signal** (symmetric, only if the venue supports shorting BTC/USD):
-  `RSI_{t-1} <= 70  AND  RSI_t > 70`   (RSI crosses above 70)
+- **Short entry signal** (only if the venue supports shorting BTC/USD):
+  `Regime_t == "down"  AND  RSI_{t-1} <= 70  AND  RSI_t > 70`   (RSI crosses above 70)
   → Submit market sell/short, fills at `Open_{t+1}`.
 
 No pyramiding: while a position is open, new entry signals are ignored.
@@ -127,8 +152,9 @@ At each bar close `t`:
 |---|---|
 | RSI period | 14 (Wilder) |
 | ATR period | 14 (Wilder) |
-| Long entry | RSI crosses below 30 |
-| Short entry | RSI crosses above 70 |
+| Trend filter | SMA(200); longs only above it, shorts only below it |
+| Long entry | RSI crosses below 30, in an "up" regime |
+| Short entry | RSI crosses above 70, in a "down" regime |
 | Long exit (target) | RSI crosses above 55 |
 | Short exit (target) | RSI crosses below 45 |
 | Time-stop | 10 bars |
@@ -137,5 +163,9 @@ At each bar close `t`:
 | Max notional exposure | 25% of equity |
 | Pyramiding | None — 1 position at a time |
 
-This is a specification, not investment advice; validate on out-of-sample
-data and realistic fees/slippage before trading it live.
+This is a specification, not investment advice. The regime filter targets
+a known, structural failure mode (fighting BTC's dominant trend), but no
+rule set can be guaranteed profitable on future or even all historical
+data — validate on out-of-sample data and realistic fees/slippage, and
+treat any backtest P&L (positive or negative) as one data point, not a
+target to fit parameters to.
