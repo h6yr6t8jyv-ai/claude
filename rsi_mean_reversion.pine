@@ -108,8 +108,10 @@ if not inPosition
 // (done once per trade), then manage exits every bar while in position.
 // ---------------------------------------------------------------------------
 if inPosition and not stopOrderSet
-    stopPrice := isLong ? strategy.position_avg_price - stopDistanceAtEntry
-                          : strategy.position_avg_price + stopDistanceAtEntry
+    if isLong
+        stopPrice := strategy.position_avg_price - stopDistanceAtEntry
+    else
+        stopPrice := strategy.position_avg_price + stopDistanceAtEntry
     entryBarIndex := bar_index
     stopOrderSet  := true
 

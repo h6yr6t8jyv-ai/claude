@@ -112,8 +112,10 @@ if not inPosition
 // actual fill price (done once per trade).
 // ---------------------------------------------------------------------------
 if inPosition and not tradeInit
-    initialStop := isLong ? strategy.position_avg_price - initialStopDistance
-                            : strategy.position_avg_price + initialStopDistance
+    if isLong
+        initialStop := strategy.position_avg_price - initialStopDistance
+    else
+        initialStop := strategy.position_avg_price + initialStopDistance
     trailExtreme := isLong ? high : low
     tradeInit    := true
 
