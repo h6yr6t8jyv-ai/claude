@@ -39,14 +39,13 @@ smaTrend = ta.sma(close, smaLength)
 upperBand = smaTrend * (1 + bufferPct / 100)
 lowerBand = smaTrend * (1 - bufferPct / 100)
 
-var bool inUptrend = na
-if na(inUptrend)
-    inUptrend := close > smaTrend
-else if close > upperBand
-    inUptrend := true
-else if close < lowerBand
-    inUptrend := false
-// else: inside the buffer band, hold the previous regime unchanged
+var bool inUptrend = false   // stays false (no trades) until the SMA is defined
+if not na(smaTrend)
+    if close > upperBand
+        inUptrend := true
+    else if close < lowerBand
+        inUptrend := false
+    // else: inside the buffer band, hold the previous regime unchanged
 
 // ---------------------------------------------------------------------------
 // Entries / exits — one signal per regime flip, fills at next bar's open.
